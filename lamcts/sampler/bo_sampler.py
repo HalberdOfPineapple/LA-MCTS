@@ -11,7 +11,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, ConstantKernel
 from sklearn.preprocessing import StandardScaler
 
-from ..func import Func, FuncStats
+from ..func import Func, FuncStats, StatsFuncWrapper
 from ..node import Path
 from ..sampler.random_sampler import RandomSampler
 from ..type import Bag
@@ -24,7 +24,7 @@ class BOSampler(RandomSampler):
     def __init__(
             self,
             func: Func,
-            func_stats: FuncStats,
+            func_stats: StatsFuncWrapper,
             acquisition: str = "ei",
             nu: float = 1.5,
             gp_num_cands: int = 0,
@@ -48,14 +48,19 @@ class BOSampler(RandomSampler):
         self._batch_size = batch_size
 
     def sample(self, num_samples: int, path: Optional[Path] = None, **kwargs) -> Bag:
+        # Do random sampling (LHS) at the root of the tree (path == None or len(path) == 0)
         if path is None or len(path) == 0:
             return super().sample(num_samples, path, **kwargs)
 
         call_budget = kwargs["call_budget"] if "call_budget" in kwargs else float('inf')
         num_samples = int(min(num_samples, call_budget - self._func_stats.stats.total_calls))
         gp_bag = path[-1].bag.clone()
-        sample_bag = self._func.gen_sample_bag()
+
+        # No inputs are provided => just initializing the collection
+        sample_bag = self._func_stats.gen_sample_bag()
+
         while len(sample_bag) < num_samples:
+            # ------------- Pick samples for training GP ----------------------
             if len(gp_bag) > self._gp_max_samples > 0:
                 picks = np.argsort(gp_bag.fxs)
                 if self._func.is_minimizing:
@@ -67,35 +72,56 @@ class BOSampler(RandomSampler):
             else:
                 xs = gp_bag.xs
                 fxs = gp_bag.fxs
+            # -----------------------------------------------------------------
 
+            # ------------------------ Training GP ----------------------------
             x_scaler = StandardScaler()
             x_scaler.fit(xs)
 
+            # kernel choice: multiplication of constant and Matern kernel
             kernel = (ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-8, 1e8)) *
                       Matern(length_scale_bounds=(1e-8, 1e8), nu=self._nu))
             gpr = GaussianProcessRegressor(kernel=kernel)
             gpr.fit(x_scaler.transform(xs), fxs)
+            # -----------------------------------------------------------------
 
+            # ------------ Sampling candidates (before estimation) ------------
             xs_lb, xs_ub = confidence_bounds(xs)
             x_cand = np.empty((0, self._func.dims))
             while len(x_cand) < self._gp_num_cands:
                 cands = self._func.gen_random_inputs(self._gp_num_cands, xs_lb, xs_ub)
+
+                # Filter out unmatched candidates
                 choices = path.filter(cands)
                 if choices.sum() == 0:
                     break
+
                 x_cand = np.concatenate((x_cand, cands[choices]))
 
             if len(x_cand) < 1:
                 break
+            # -----------------------------------------------------------------
 
+
+            # Estimate performance for candidates (with mean and stds)
             # x_cand = self._func.gen_random_inputs(self._gp_num_cands, xs_lb, xs_ub)
             mean, std = gpr.predict(x_scaler.transform(x_cand), return_std=True)
+            # -----------------------------------------------------------------
 
+
+            # Select the batch of samples maximizing acquisition function their indices are stored in `indices`
             af = bo_acquisition(fxs, mean, std, self._acquisition, self._func.is_minimizing)
             batch_size = self._batch_size if self._batch_size > 0 else num_samples
             batch_size = int(min(num_samples - len(sample_bag), batch_size))
-            indices = np.argsort(af)[-batch_size:]
-            next_bag = self._func.gen_sample_bag(x_cand[indices])
+            indices = np.argsort(af)[-batch_size:] 
+            # -----------------------------------------------------------------
+
+            # Call the function on the selected indices maximizing acquisiton function
+            # next_bag = self._func.gen_sample_bag(x_cand[indices])
+            next_bag = self._func_stats.gen_sample_bag(x_cand[indices])
+            # -----------------------------------------------------------------
+
+            # Extend the sample bag and return sample bag (which will be used for extending)
             gp_bag.extend(next_bag)
             sample_bag.extend(next_bag)
         return sample_bag

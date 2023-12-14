@@ -14,7 +14,7 @@ import cma
 import numpy as np
 
 from .sampler import Sampler
-from ..func import Func, FuncStats
+from ..func import Func, FuncStats, StatsFuncWrapper
 from ..node import Path
 from ..type import Bag
 from ..utils import get_logger
@@ -24,7 +24,8 @@ warnings.simplefilter("ignore", cma.evolution_strategy.InjectionWarning)
 
 
 class CmaesSampler(Sampler):
-    def __init__(self, func: Func, func_stats: FuncStats, **kwargs):
+    # def __init__(self, func: Func, func_stats: FuncStats, **kwargs):
+    def __init__(self, func: Func, func_stats: StatsFuncWrapper, **kwargs):
         """
         TuRBO implementation
 
@@ -40,7 +41,8 @@ class CmaesSampler(Sampler):
         if not math.isinf(call_budget):
             num_samples = min(num_samples, int(call_budget - self._func_stats.stats.total_calls))
         if num_samples <= 0:
-            return self._func.gen_sample_bag()
+            # return self._func.gen_sample_bag()
+            return self._func_stats.gen_sample_bag()
 
         if path is None or len(path) < 2:
             x0 = (self._func.ub + self._func.lb) / 2.0
@@ -53,7 +55,8 @@ class CmaesSampler(Sampler):
             if sigma0 == 0.0:
                 sigma0 = (self._func.ub - self._func.lb).max() / 6.0
 
-        samples = self._func.gen_sample_bag()
+        # samples = self._func.gen_sample_bag()
+        samples = self._func_stats.gen_sample_bag()
         with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
             es = cma.CMAEvolutionStrategy(x0, sigma0, {'popsize': 4})
             while len(samples) < num_samples:

@@ -101,7 +101,8 @@ class KmeanSvmClassifier(SvmClassifier):
     def __init__(self, lb: np.ndarray, ub: np.ndarray, svm="svc", kernel="rbf", gamma="auto", scaler="",
                  use_features=False):
         super().__init__(lb, ub, svm, kernel, gamma, scaler, use_features)
-        self._kmean = KMeans(n_clusters=2)
+        # self._kmean = KMeans(n_clusters=2)
+        self._kmean = KMeans(n_clusters=2, n_init='auto')
         self._ul_diff = (self._ub_max - self._lb_min) / 2.0
         self._ul_center = (self._ub_max + self._lb_min) / 2.0
 

@@ -36,6 +36,7 @@ class Bag():
             self._dims = xs.shape[1]
         else:
             self._dims = xs
+
         self._is_minimizing = is_minimizing
         if is_discrete is None:
             self._is_discrete = np.full(self._dims, False)
@@ -48,6 +49,7 @@ class Bag():
             self._xs, indices = self.remove_duplicate(xs)
         else:
             self._xs = np.empty((0, self._dims))
+
         if fxs.size > 0:
             assert fxs.shape == (self._xs.shape[0],)
             if indices is None:
@@ -56,6 +58,7 @@ class Bag():
                 self._fxs = fxs[indices]
         else:
             self._fxs = np.empty((0,))
+
         if features is not None:
             assert features.shape[0] == self._xs.shape[0]
             if indices is None:
@@ -64,6 +67,7 @@ class Bag():
                 self._features = features[indices]
         else:
             self._features = None
+
         self._best: Optional[Sample] = None
         self._mean: float = float('NaN')
         self._update_best()
@@ -82,11 +86,17 @@ class Bag():
     def _update_best(self):
         if self._fxs.size == 0:
             return
+        
+        # Update mean value
         self._mean = self._fxs.mean().item()
+
+        # Update index to the best sample
         if self._is_minimizing:
             best = np.argmin(self._fxs)
         else:
             best = np.argmax(self._fxs)
+
+        # Update the best sample object
         if (self._best is None or
                 (self._fxs[best] > self._best.fx and not self._is_minimizing) or
                 (self._fxs[best] < self._best.fx and self._is_minimizing)):
@@ -170,25 +180,32 @@ class Bag():
         return True
 
     def extend(self, other) -> bool:
+        # Guarantee the input is a Bag object and the dimensionality matches
         assert isinstance(other, Bag) and self._dims == other.dims
+
+        # If the input bag is empty, directly return False
         if len(other) == 0:
             return False
+
         was_empty = len(self._xs) == 0
         old_size = len(self._xs)
         update_fxs = len(self._fxs) == old_size
         self._xs, idx = self.remove_duplicate(np.concatenate((self._xs, other.xs)))
         if len(self._xs) == old_size:
             return False
+
         if update_fxs:
             if other.fxs.size > 0:
                 self._fxs = np.concatenate((self._fxs, other.fxs))[idx]
             elif len(self._fxs) > 0:
                 self._fxs = np.concatenate((self._fxs, np.full((len(self._xs) - len(self._fxs),), self._invalid_fx)))
             self._update_best()
+
         if was_empty:
             self._features = other.features
         elif self._features is not None and other.features is not None:
             self._features = np.concatenate((self._features, other.features))[idx]
+
         return True
 
     def trim(self, size: int) -> Any:

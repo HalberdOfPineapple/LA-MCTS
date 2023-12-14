@@ -13,7 +13,7 @@ import nevergrad as ng
 import numpy as np
 
 from ..config import SampleCenter
-from ..func import Func, FuncStats
+from ..func import Func, FuncStats, StatsFuncWrapper
 from ..node import Path
 from ..sampler.random_sampler import RandomSampler
 from ..type import Bag, Sample
@@ -23,7 +23,9 @@ logger = get_logger("sampler")
 
 
 class NevergradSampler(RandomSampler):
-    def __init__(self, func: Func, func_stats: FuncStats, sample_center: SampleCenter = SampleCenter.Median):
+    def __init__(self, func: Func, 
+                 func_stats: StatsFuncWrapper, 
+                 sample_center: SampleCenter = SampleCenter.Median):
         """
         TuRBO implementation
 
@@ -40,7 +42,8 @@ class NevergradSampler(RandomSampler):
         if not math.isinf(call_budget):
             num_samples = min(num_samples, int(call_budget - self._func_stats.stats.total_calls))
         if num_samples <= 0:
-            return self._func.gen_sample_bag()
+            # return self._func.gen_sample_bag()
+            return self._func_stats.gen_sample_bag()
 
         root = None
         if path is not None and len(path) > 0:
@@ -70,7 +73,8 @@ class NevergradSampler(RandomSampler):
                 cand = optimizer.parametrization.spawn_child(new_value=x)
                 optimizer.tell(cand, fx)
 
-        samples = self._func.gen_sample_bag()
+        # samples = self._func.gen_sample_bag()
+        samples = self._func_stats.gen_sample_bag()
         with open(os.devnull, "w") as f, contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
             for _ in range(num_samples):
                 cand = optimizer.ask()

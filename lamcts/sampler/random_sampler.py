@@ -10,7 +10,7 @@ from typing import Optional, ClassVar
 import numpy as np
 
 from .sampler import Sampler
-from ..func import Func, FuncStats
+from ..func import Func, FuncStats, StatsFuncWrapper
 from ..node import Path
 from ..type import Bag
 from ..utils import get_logger
@@ -21,13 +21,15 @@ logger = get_logger("random")
 class RandomSampler(Sampler):
     TOTAL_RETRIES: ClassVar[int] = 50
 
-    def __init__(self, func: Func, func_stats: FuncStats):
+    # def __init__(self, func: Func, func_stats: FuncStats):
+    def __init__(self, func: Func, func_stats: StatsFuncWrapper):
         super().__init__(func, func_stats)
 
     def _generate_inputs(self, num_samples: int, path: Optional[Path] = None) -> np.ndarray:
         if path is not None and len(path) > 0:
             node = path[-1]
             lb, ub = node.bag.x_confidence_bounds(2.0)
+            
             inputs = np.empty((0, self._func.dims))
             while len(inputs) < num_samples:
                 cands = self._func.gen_random_inputs(num_samples, lb, ub)
@@ -37,6 +39,8 @@ class RandomSampler(Sampler):
                 inputs = np.concatenate((inputs, cands[choices]))
             return inputs
         else:
+            # if path is None or len(path) == 0 (at the root node / tree initializing)
+            # generate random inputs using latin hypercube
             return self._func.gen_random_inputs(num_samples)
 
     def sample(self, num_samples: int, path: Optional[Path] = None, **kwargs) -> Bag:
@@ -48,11 +52,14 @@ class RandomSampler(Sampler):
         :param kwargs:
         :return:
         """
-        xs = self._generate_inputs(num_samples, path)
+        xs: np.ndarray = self._generate_inputs(num_samples, path)
         call_budget = kwargs["call_budget"] if "call_budget" in kwargs else float('inf')
         if not math.isinf(call_budget):
             num_samples = max(0, min(num_samples, call_budget - self._func_stats.stats.total_calls))
-        return self._func.gen_sample_bag(xs[:num_samples])
+
+        # gen_sample_bag: concrete execution on the sampled points, which should cost call budget
+        # return self._func.gen_sample_bag(xs[:num_samples])
+        return self._func_stats.gen_sample_bag(xs[:num_samples])
 
     def __str__(self) -> str:
         return f"RandomSampler"

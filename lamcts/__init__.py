@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from .func import Func, FuncDecorator, WorkerFunc, FuncStats, WorkerFuncStats, StatsFuncWrapper, CallHistory, \
+from .func import Func, FuncDecorator, FuncStats, StatsFuncWrapper, CallHistory, \
     find_checkpoint, CheckPoint
 from .mcts import MCTS
 from .type import Sample, Bag, ObjectFactory

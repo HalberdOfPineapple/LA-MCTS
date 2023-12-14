@@ -127,9 +127,9 @@ CLASSIFIER_PARAMS = {
 }
 
 MCTS_PARAMS = {
-    "cp": 0.1,
-    "cb_base": ConfidencyBase.Best,
-    "leaf_size": 10,
+    "cp": 0.1, # parameter controlling exploration
+    "cb_base": ConfidencyBase.Best, # confident bound base, 0: mean, 1: best
+    "leaf_size": 10, # number of samples hold by a leaf
     "num_init_samples": 100,
     "num_samples_per_sampler": 20,
     "search_type": SearchType.Vertical,
@@ -157,3 +157,4 @@ def get_mcts_params(sampler: SamplerEnum = SamplerEnum.RANDOM_SAMPLER,
             "params": {**CLASSIFIER_PARAMS[classifier]}
         }
     }
+

@@ -40,16 +40,6 @@ class Node:
     task_queue: mp.Queue = None
     rslt_queue: mp.Queue = None
 
-    # @staticmethod
-    # def init():
-    #     """
-    #     Initialize global variables
-    #     """
-    #     Node._next_id = count()
-    #     Node._all_leaves.clear()
-    #     Node._all_nodes.clear()
-    #     Node.split_time = 0.0
-
     @staticmethod
     def init(num_workers: int = 1):
         """
@@ -103,26 +93,44 @@ class Node:
         # remove all descendents of node 'root'
         queue = deque()
         queue.append(root)
+
+        # Clear the previous nodes in a BFS-style, to free the space for the new tree
+        # For each node being iterated, directly remove its id if it is a leaf node.
+        # Or remove all its children if it is not a leaf, and put its children onto the queue for further removal.
         while len(queue) > 0:
             node = queue.popleft()
+            
             for child in node.children:
                 if child.is_leaf:
                     Node._all_leaves.remove(child.id)
                 else:
                     queue.append(child)
+    
                 del Node._all_nodes[child.id]
             node.clear_children()
-        if Node.task_queue is None:
+
+
+        # After the recursive splitting process, we will arrive nodes 
+        if Node.task_queue is None: # Single process 
             # no workers, do split in current process
             queue = deque()
             queue.append(root)
             while len(queue) > 0:
                 node = queue.popleft()
+
+                # Add the current node
                 Node._all_nodes[node.id] = node
+
+                # Split the current node and recursively repeat this process
+                # split includes the **fitting a classifier (KMeans + SVM) to current data region**
+                # Returns a list of newly split children nodes
                 children = node.split()
+
                 if len(children) == 0:
+                    # if no new children are generated, add the current node to the list of leaf nodes
                     Node._all_leaves.add(node.id)
                 else:
+                    # For newly generated nodes, add them to queue for further splitting
                     for child in children:
                         queue.append(child)
         else:
@@ -142,6 +150,7 @@ class Node:
                         for child in children:
                             Node.task_queue.put(child)
                             task += 1
+
         Node.split_time += time.time() - st
         return Node.get_node(root.id)
 
@@ -182,18 +191,26 @@ class Node:
         self._label = label
         self._dims = dims
         self._leaf_size = leaf_size
+
         self._cp = cp
+        self._cb = float('NaN')
+        self._cb_base= cb_base
+
         self._classifier_factory = classifier_factory
         self._classifier = classifier_factory.make_object()
+
         self._parent = parent
         self._children: List[int] = []
+
         self._split_semaphore = None
-        self._cb = float('NaN')
+        
         assert 0 < len(bag.xs) == len(bag.fxs)
         self._bag = bag
-        self._cb_base= cb_base
         self._update_cb()
+
         self._curr_mean_diff = float('-inf')
+
+        # Add the object into a class's global map
         self._id = next(Node._next_id)
         Node._all_nodes[self._id] = self
 
@@ -261,7 +278,10 @@ class Node:
 
     def classify(self) -> List[Tuple[int, np.ndarray]]:
         splits = []
-        if self.splittable:
+
+        # splittable - current bag size (node size) more than or equal to leaf size
+        if self.splittable: 
+            # Classify process includes the process of fitting the classifier to current bag of data
             labels = self._classifier.classify(self._bag)
             unique_labels = np.unique(labels)
             if len(unique_labels) > 1:
@@ -271,21 +291,35 @@ class Node:
                         splits.clear()
                         break
                     splits.append((label, choice))
+    
+        # splits is a list of (label, array of samples belonging to the labelled class)
         return splits
 
     def predict(self, xs: np.ndarray) -> np.ndarray:
         return self._classifier.predict(xs)
 
     def _update_cb(self):
+        """Method for updating the value of current node's UCB."""
+        # self._cb is the value **representing the exploitation** of the node. 
+        # It can be adjusted by `_cb_base` to use the mean or the best value in this node's space
+        # (in the paper, this should be set to mean)
         self._cb = self._bag.mean if self._cb_base == ConfidencyBase.Mean else self._bag.best.fx
+
         if self._parent >= 0:
+            # n_p - number of samples in the parent node
             parent = Node._all_nodes[self._parent]
             n_p = len(parent.bag.fxs)
+
+            # n_j - number of samples in the current node
             n_j = len(self._bag.fxs)
-            c = 2.0 * self._cp * math.sqrt(2.0 * math.pow(n_p, 0.5) / n_j)
-            # c = 2.0 * self._cp * math.sqrt(2.0 * math.log(n_p) / n_j)
+
+            # The value of **exploration** is calculated based on _cp and number of values in parent and current nodes
+            # c = 2.0 * self._cp * math.sqrt(2.0 * math.pow(n_p, 0.5) / n_j)
+            c = 2.0 * self._cp * math.sqrt(2.0 * math.log(n_p) / n_j)
+
             if self._bag.is_minimizing:
-                self._cb -= c
+                # if minimizing, _cb should be negative and the exploration term should be negative too
+                self._cb -= c 
             else:
                 self._cb += c
 
@@ -299,8 +333,10 @@ class Node:
     def add_bag(self, bag: Bag, split: bool = False):
         if bag is None or len(bag) == 0:
             return
+        
         if not self._bag.extend(bag):
             return
+    
         self._update_cb()
         if split:
             if not self.is_leaf:
@@ -355,15 +391,31 @@ class Node:
         self._children.clear()
         if splits is None:
             splits = self.classify()
+
         children = []
         for label, choice in splits:
+            # e.g. ('left' or 'right' (just an example), [ind1, ind2, ..., indn])
+
+            # Build new bag containing the samples belonging to this class
             bag = Bag(self._bag.xs[choice], self._bag.fxs[choice],
                       self._bag.features[choice] if self._bag.features is not None else None,
                       self._bag.is_minimizing)
+            
+            # Build new node given this new bag and update the current node's children list
+            # The new child inherits:
+            #    - the dimensionalities,
+            #    - leaf size threshould 
+            #    - (_cp) exploration constant
+            #    - classifier type
+            #    - type of confidence base (mean or vest)
+            # And it will has its own:
+            #    - bag (search region)
+            #    - label
             child = Node(self._dims, self._leaf_size, self._cp, self._classifier_factory, bag, self._cb_base, label,
                          self._id)
             children.append(child)
             self._children.append(child.id)
+
         return children
 
     def filter(self, xs: np.ndarray) -> np.ndarray:
@@ -372,6 +424,7 @@ class Node:
         labels = Node._all_nodes[self._parent]._classifier.predict(xs)
         return labels == self._label
 
+    # The return types is List[Node]
     def path_from_root(self) -> List:
         nodes = [self]
         node = self.parent
@@ -382,6 +435,7 @@ class Node:
         return nodes
 
     def sorted_leaves(self, nodes: List, sort_type: Optional[GreedyType] = None):
+        # Recursively sort all the nodes from the root by (c.confidence_bound, c.mean, c.best.fx)
         if self.is_leaf:
             nodes.append(self)
         else:
@@ -391,6 +445,7 @@ class Node:
                 cands = random.sample(self.children, k=len(self._children))
             else:
                 cands = sorted(self.children, key=Node.comparison_key(sort_type), reverse=not self.bag.is_minimizing)
+
             for node in cands:
                 node.sorted_leaves(nodes, sort_type)
 
@@ -423,6 +478,7 @@ class Path:
         return Path(self._path[:len])
 
     def filter(self, xs: np.ndarray) -> np.ndarray:
+        """Filter out the samples to be classified as unmatched with any node in the path"""
         assert len(xs) > 0
         pnode = None
         choices = np.full(len(xs), True)
@@ -430,12 +486,18 @@ class Path:
             if pnode is None:
                 pnode = node
                 continue
+
             indices = np.arange(0, len(xs))[choices]
-            labels = pnode.classifier.predict(xs[choices])
+
+            # using parent's node classifier to determine
+            # whether the candidate should fall in this node's region
+            labels = pnode.classifier.predict(xs[choices]) 
+
             choices[indices[labels != node.label]] = False
             if np.all(choices == False):
                 break
             pnode = node
+        
         return choices
 
     def bounds(self, lb: np.ndarray, ub: np.ndarray, sample_size: int = 1000, confidence: float = 0.95, eps: float = 0.9) \

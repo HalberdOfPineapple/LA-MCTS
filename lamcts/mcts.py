@@ -13,7 +13,7 @@ from .classifier.classifier import Classifier
 from .classifier.svm_classifier import KmeanSvmClassifier, ThresholdSvmClassifier, RegressionSvmClassifier
 from .config import *
 from .config import GreedyType
-from .func import Func, FuncStats
+from .func import Func, FuncStats, StatsFuncWrapper
 from .node import Node, Path
 from .sampler.bo_sampler import BOSampler
 from .sampler.cmaes_sampler import CmaesSampler
@@ -67,7 +67,36 @@ class MCTS:
     }
 
     @staticmethod
-    def create_mcts(func: Func, func_stats: FuncStats, params: Dict) -> 'MCTS':
+    def create_mcts(func: Func, func_stats: StatsFuncWrapper, params: Dict) -> 'MCTS':
+        
+# {
+#     "params": {
+#         "cp": 0.1,
+#         "cb_base": ConfidencyBase.Best,
+#         "leaf_size": 10,
+#         "num_init_samples": 100,
+#         "num_samples_per_sampler": 20,
+#         "search_type": SearchType.Vertical,
+#         "num_split_worker": 1,
+#         "cp": 0.01,
+#         "cb_base": ConfidencyBase.Best,
+#         "leaf_size": 40,
+#         "num_samples_per_sampler": 100,
+#         },
+#     "sampler": {
+#         "type": sampler,
+#         "params": {
+#             "acquisition": "ei",
+#             "nu": 2.5,
+#             **SAMPLER_PARAMS[sampler]
+#         }
+#     },
+#     "classifier": {
+#         "type": classifier,
+#         "params": {**CLASSIFIER_PARAMS[classifier]}
+#     }
+# }
+
         if params["sampler"]["type"] == SamplerEnum.TURBO_SAMPLER:
             sampler = TuRBOSampler(func, func_stats, **params["sampler"]["params"])
         elif params["sampler"]["type"] == SamplerEnum.BO_SAMPLER:
@@ -80,6 +109,8 @@ class MCTS:
             sampler = RandomSampler(func, func_stats)
         else:
             raise NotImplementedError(f"Unsupported sampler {params['sampler']['type']}")
+        
+        
         if params["classifier"]["type"] == ClassifierEnum.KMEAN_SVM_CLASSIFIER:
             classifier_factory = ObjectFactory(KmeanSvmClassifier,
                                                args=(func.lb, func.ub),
@@ -102,7 +133,9 @@ class MCTS:
             classifier_factory=classifier_factory)
 
     def __init__(
-            self, func: Func, func_stats: FuncStats,
+            self, func: Func, 
+            # func_stats: FuncStats,
+            func_stats: StatsFuncWrapper,
             num_init_samples: int = DEFAULT_NUM_INIT_SAMPLES,
             cp: float = DEFAULT_CP,
             cb_base: ConfidencyBase = ConfidencyBase.Mean,
@@ -113,6 +146,20 @@ class MCTS:
             sampler: Optional[Sampler] = None,
             search_type: SearchType = SearchType.Vertical,
             device: str = "cpu"):
+        
+        # "params": {
+        #         "cp": 0.1,
+        #         "cb_base": ConfidencyBase.Best,
+        #         "leaf_size": 10,
+        #         "num_init_samples": 100,
+        #         "num_samples_per_sampler": 20,
+        #         "search_type": SearchType.Vertical,
+        #         "num_split_worker": 1,
+        #         "cp": 0.01,
+        #         "cb_base": ConfidencyBase.Best,
+        #         "leaf_size": 40,
+        #         "num_samples_per_sampler": 100,
+        #         },
         self._func = func
         self._func_stats = func_stats
         self._num_init_samples = num_init_samples
@@ -153,10 +200,20 @@ class MCTS:
         logger.debug(f"  sampler: {sampler}")
 
     def init_tree(self):
+        # First sample `_num_init_samples` (random sampling using LHS initially)
         samples = self._sampler.sample(self._num_init_samples)
-        self._root = Node(self._func.dims, self._leaf_size, self._cp * samples.best.fx, self._classifier_maker,
-                          samples, self._cb_base)
+
+        self._root = Node(
+            self._func.dims, 
+            self._leaf_size, 
+            self._cp * samples.best.fx, # see Paper 4.4, each node's _cp value is determined by 10% to 1% of the best value in **whole search space**
+            self._classifier_maker, # classifier is also encapsulated in a Node
+            samples, 
+            self._cb_base # whether the mean or best value of samples should be used as the value of the node
+        )
         logger.debug(f"Init {len(self._root.bag)} samples, best {self._root.bag.best.fx}")
+
+        # Build the tree from the root node
         self._root = Node.build_tree(self._root)
 
     def search(self, greedy: GreedyType = GreedyType.ConfidencyBound, call_budget: float = float('inf')) -> \
@@ -168,15 +225,23 @@ class MCTS:
         :param call_budget:
         :return: best sample found
         """
+        # greedy=GreedyType.ConfidencyBound
         logger.debug(f"start training LaMCTS: {call_budget} call budget")
         Node.init(self._num_split_worker)
         start_time = time.time()
+
+        # Initialization
         self.init_tree()
         self._mcts_stats = self._stats()
         logger.debug(f"  init number of nodes: {self._root.num_descendants + 1}")
+
+        # Starts iteration
         iteration = 0
         while self._func_stats.stats.total_calls < call_budget:
             iteration += 1
+
+            # At the start of an iteration, the leaves will be sorted by the specified GreedyType
+            # which can be confidence bound, mean and best (see Node.comparison_key for implementation)
             if self._search_type == SearchType.Vertical:
                 all_leaves = []
                 self._root.sorted_leaves(all_leaves, greedy)
@@ -187,27 +252,41 @@ class MCTS:
                 else:
                     # sort leaves based on greedy selection
                     all_leaves.sort(key=Node.comparison_key(greedy), reverse=not self._func.is_minimizing)
+
+            # Sample from the leftmost leaf to the rightmost
             new_samples = None
             for sample_node in all_leaves:
+                # Load the path from the root to the current node
                 path = Path(sample_node.path_from_root())
+
                 if new_samples is None:
                     new_samples = self._sampler.sample(self._num_samples_per_sampler, path)
                 else:
                     new_samples.extend(self._sampler.sample(self._num_samples_per_sampler, path))
+
                 if len(new_samples) >= self._num_samples_per_sampler:
                     break
+
             if new_samples is None or len(new_samples) == 0:
                 new_samples = self._sampler.sample(self._num_samples_per_sampler)
             if len(new_samples) == 0:
                 break
+
+            # Add the new samples to the root (the whole search space)
             self._root.add_bag(new_samples)
+
+            # cp refers to parameter controlling exploration
             self._root.cp = self._cp * self._root.bag.best.fx
+
+            # **the tree will be built after each sampling**
             self._root = Node.build_tree(self._root)
+
             self._mcts_stats = total_nodes, total_leaves, leaf_size_mean, leaf_size_median = self._stats()
-            logger.debug(f"Iter[{iteration}] - samples: {len(self._root.bag)}, nodes: {total_nodes}, "
+            logger.debug(f"Total Calls [{self._func_stats.stats.total_calls}] - Iter[{iteration}] - samples: {len(self._root.bag)}, nodes: {total_nodes}, "
                          f"leaves: {total_leaves}, leaf size mean: {leaf_size_mean:.2f}, "
                          f"leaf size median: {leaf_size_median}, time: {time.time() - start_time:.2f}, "
                          f"best: {self._root.bag.best.fx:.4f}")
+    
         stats = self._func_stats.stats
         logger.debug(f"split time:  {Node.split_time}")
         logger.debug(f"call time:   {stats.total_call_time}")

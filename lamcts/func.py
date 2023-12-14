@@ -16,7 +16,6 @@ from .config import *
 from .type import Bag, ObjectFactory
 from .utils import latin_hypercube, eps
 
-
 class Func(ABC):
     """
     Function interface to be implemented by the client
@@ -93,9 +92,11 @@ class Func(ABC):
             lb = self.lb
         if ub is None:
             ub = self.ub
+
         samples = np.empty((0, self.dims), dtype=float)
         if self.input_equal(lb, ub):
             return samples
+
         samples_size = len(samples)
         while samples_size < num_inputs:
             xs = self.transform_input(np.random.random((num_inputs, self.dims)) * (ub - lb) + lb)
@@ -104,6 +105,7 @@ class Func(ABC):
             if samples_size == new_sample_size:
                 break
             samples_size = new_sample_size
+
         np.random.shuffle(samples)
         return samples[:num_inputs]
 
@@ -275,168 +277,19 @@ class StatsFuncWrapper(FuncDecorator, FuncStats):
         st = time.time()
         fxs, fturs = self._func(xs)
         ct = time.time() - st
+
         self._stats.add_stat(xs, fxs, ct)
+
         return fxs, fturs
+
+    def gen_sample_bag(self, xs: Optional[np.ndarray] = None) -> Bag:
+        if xs is None or len(xs) == 0:
+           return Bag(self._func.dims, 
+                      is_minimizing=self._func.is_minimizing, 
+                      is_discrete=self._func.is_discrete)
+        fs, features = self(self._func.transform_input(xs))
+        return Bag(xs, fs, features, self._func.is_minimizing, self._func.is_discrete)
 
     @property
     def stats(self) -> FuncStats.Stats:
         return self._stats
-
-
-class WorkerFuncStats(FuncStats):
-    """
-    FuncStats to track multi-process functions calls
-    """
-
-    def __init__(self):
-        self._stat_queue = mp.Queue()
-        self._rslt_queue = mp.Queue()
-
-    @property
-    def stat_queue(self) -> mp.Queue:
-        return self._stat_queue
-
-    @property
-    def rslt_queue(self) -> mp.Queue:
-        return self._rslt_queue
-
-    @property
-    def stats(self) -> FuncStats.Stats:
-        self._stat_queue.put(("get", None))
-        return self._rslt_queue.get()
-
-
-class WorkerFunc(Func):
-    """
-    A convenient utility to run function calls in multi-processes, see examples for how to use
-    """
-    _task_queue: ClassVar[mp.Queue] = None
-    _rslt_queues: ClassVar[List[mp.Queue]] = []
-    _workers: ClassVar[List[mp.Process]] = []
-    _stat_worker: ClassVar[mp.Process] = None
-    _func: ClassVar[Func] = None
-    _func_stats: ClassVar[FuncStats] = None
-
-    @staticmethod
-    def _work(task_queue: mp.Queue, rslt_queues: List[mp.Queue], stat_queue: mp.Queue, func_maker: ObjectFactory[Func]):
-        func = func_maker.make_object()
-        while True:
-            params = task_queue.get()
-            if params is None:
-                break
-            i, xs, idx = params
-            st = time.time()
-            rslt = func(xs)
-            ct = time.time() - st
-            rslt_queues[i].put((rslt, idx, ct))
-            stat_queue.put(("add", (xs, rslt[0], ct)))
-        func.cleanup()
-
-    @staticmethod
-    def _stat_work(is_minimizing: bool, stat_queue: mp.Queue, rslt_queue: mp.Queue):
-        stats = FuncStats.Stats(is_minimizing)
-        while True:
-            cmd, stat = stat_queue.get()
-            if cmd is None:
-                rslt_queue.put(None)
-                break
-            if cmd == "get":
-                rslt_queue.put(stats)
-            elif cmd == "add":
-                stats.add_stat(*stat)
-
-    @staticmethod
-    def init(batch_size: int, num_workers: int, num_callers: int, proxy_func: Func, func_factory: ObjectFactory[Func]) \
-            -> Tuple[List[Func], FuncStats]:
-        if num_workers > 1:
-            WorkerFunc._task_queue = mp.Queue()
-            WorkerFunc._rslt_queues = [mp.Queue() for _ in range(num_callers)]
-            WorkerFunc._func_stats = WorkerFuncStats()
-            WorkerFunc._workers = [mp.Process(target=WorkerFunc._work,
-                                              args=(WorkerFunc._task_queue, WorkerFunc._rslt_queues,
-                                                    WorkerFunc._func_stats.stat_queue, func_factory))
-                                   for _ in range(num_workers)]
-            for worker in WorkerFunc._workers:
-                worker.start()
-            WorkerFunc._stat_worker = mp.Process(target=WorkerFunc._stat_work,
-                                                 args=(proxy_func.is_minimizing,
-                                                       WorkerFunc._func_stats.stat_queue,
-                                                       WorkerFunc._func_stats.rslt_queue))
-            WorkerFunc._stat_worker.start()
-            return ([WorkerFunc(i, proxy_func, batch_size, WorkerFunc._task_queue, rslt_queue)
-                     for i, rslt_queue in enumerate(WorkerFunc._rslt_queues)],
-                    WorkerFunc._func_stats)
-        else:
-            WorkerFunc._func = StatsFuncWrapper(func_factory.make_object())
-            return [WorkerFunc._func], WorkerFunc._func
-
-    @staticmethod
-    def close():
-        if len(WorkerFunc._workers) > 0:
-            for _ in WorkerFunc._workers:
-                WorkerFunc._task_queue.put(None)
-            for worker in WorkerFunc._workers:
-                worker.join()
-            WorkerFunc._workers.clear()
-            WorkerFunc._task_queue.close()
-            for q in WorkerFunc._rslt_queues:
-                q.close()
-        elif WorkerFunc._func is not None:
-            WorkerFunc._func.cleanup()
-        if WorkerFunc._func_stats is not None:
-            WorkerFunc._func_stats.stat_queue.put((None, None))
-            WorkerFunc._stat_worker.join()
-
-    def __init__(self, id: int, proxy_func: Func, batch_size: int,
-                 task_queue: mp.Queue, rslt_queue: mp.Queue):
-        self._id = id
-        self._proxy_func = proxy_func
-        self._batch_size = batch_size
-        self._task_queue = task_queue
-        self._rslt_queue = rslt_queue
-
-    @property
-    def lb(self) -> np.ndarray:
-        return self._proxy_func.lb
-
-    @property
-    def ub(self) -> np.ndarray:
-        return self._proxy_func.ub
-
-    @property
-    def is_discrete(self) -> np.ndarray:
-        return self._proxy_func.is_discrete
-
-    @property
-    def dims(self) -> int:
-        return self._proxy_func.dims
-
-    @property
-    def is_minimizing(self) -> bool:
-        return self._proxy_func.is_minimizing
-
-    @property
-    def rslt_queue(self) -> mp.Queue:
-        return self._rslt_queue
-
-    def __call__(self, x: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        tasks = 0
-        count = 0
-        result = np.zeros(len(x))
-        features = None
-        while count < len(x):
-            try:
-                self._task_queue.put((self._id, x[count:(count + self._batch_size)], count))
-                tasks += 1
-                count += self._batch_size
-            except ValueError:
-                break
-        while tasks > 0:
-            (rslt, ftur), idx, ct = self._rslt_queue.get()
-            tasks -= 1
-            result[idx:(idx + len(rslt))] = rslt
-            if ftur is not None:
-                if features is None:
-                    features = np.zeros((len(x), ftur.shape[1]))
-                features[idx:(idx + len(ftur))] = ftur
-        return result, features

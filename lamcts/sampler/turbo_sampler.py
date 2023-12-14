@@ -20,7 +20,7 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.models import ExactGP
 from sklearn.preprocessing import StandardScaler
 
-from ..func import Func, FuncStats
+from ..func import Func, FuncStats, StatsFuncWrapper
 from ..node import Path
 from ..sampler.random_sampler import RandomSampler
 from ..type import Bag
@@ -48,7 +48,8 @@ class TuRBOSampler(RandomSampler):
     def __init__(
             self,
             func: Func,
-            func_stats: FuncStats,
+            # func_stats: FuncStats,
+            func_stats: StatsFuncWrapper,
             acquisition: str = "ei",
             nu: float = 1.5,
             gp_max_samples: int = 0,
@@ -220,7 +221,9 @@ class TuRBOSampler(RandomSampler):
         return x_cand[choices], hypers
 
     def sample(self, num_samples: int, path: Optional[Path] = None, **kwargs) -> Bag:
-        samples = self._func.gen_sample_bag()
+        # samples = self._func.gen_sample_bag()
+        samples = self._func_stats.gen_sample_bag()
+
         if path is not None and len(path) > 0:
             gp_bag = path[-1].bag.clone()
         else:
@@ -244,8 +247,10 @@ class TuRBOSampler(RandomSampler):
                 xs_cand, hypers = self._gp_sample(gp_bag, tr_length, hypers)
                 if xs_cand is None or len(xs_cand) == 0:
                     break
-                next_bag = self._func.gen_sample_bag(xs_cand)
+                # next_bag = self._func.gen_sample_bag(xs_cand)
+                next_bag = self._func_stats.gen_sample_bag(xs_cand)
                 next_best = next_bag.best
+
                 gp_bag.extend(next_bag)
                 samples.extend(next_bag)
 

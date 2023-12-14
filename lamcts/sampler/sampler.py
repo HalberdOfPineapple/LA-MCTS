@@ -13,7 +13,7 @@ from typing import Tuple, Optional, List, ClassVar
 import numpy as np
 import torch
 
-from ..func import Func, FuncStats
+from ..func import Func, FuncStats, StatsFuncWrapper
 from ..node import Path
 from ..type import Bag
 
@@ -22,7 +22,8 @@ class Sampler(ABC):
     """
     Interface for samplers, a.k.a, optimizers or solvers
     """
-    def __init__(self, func: Func, func_stats: FuncStats):
+    # def __init__(self, func: Func, func_stats: FuncStats):
+    def __init__(self, func: Func, func_stats: StatsFuncWrapper):
         self._func = func
         self._func_stats = func_stats
 
